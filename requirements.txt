@@ -2,5 +2,6 @@ fastapi
 uvicorn
 requests
 pdfplumber
-sentence-transformers==2.2.2
 faiss-cpu
+sentence-transformers==2.2.2
+huggingface_hub==0.14.1
