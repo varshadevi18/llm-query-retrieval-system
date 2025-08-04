@@ -12,7 +12,7 @@ from sentence_transformers import SentenceTransformer
 
 # Initialize app and model
 app = FastAPI()
-model = SentenceTransformer("all-MiniLM-L6-v2")
+model = SentenceTransformer("'paraphrase-MiniLM-L3-v2")
 
 # Auth token from HackRx portal
 TEAM_TOKEN = "87436cd7e9ec09c6ae1c66eb55aa5da937d1ec6c22a032731eb773c9a9727777"
