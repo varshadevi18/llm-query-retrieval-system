@@ -1,4 +1,5 @@
 import os
+import io
 import requests
 import pdfplumber
 import faiss
@@ -8,12 +9,12 @@ from fastapi import FastAPI, HTTPException, Header
 from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
+from concurrent.futures import ThreadPoolExecutor
 
 # Initialize app and model
 app = FastAPI()
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
-# Your HackRx Token
 TEAM_TOKEN = "87436cd7e9ec09c6ae1c66eb55aa5da937d1ec6c22a032731eb773c9a9727777"
 
 # ---------------------- PDF Extraction ----------------------
@@ -21,17 +22,22 @@ def extract_text_from_pdf_url(url: str) -> List[str]:
     try:
         response = requests.get(url)
         response.raise_for_status()
-        with open("temp.pdf", "wb") as f:
-            f.write(response.content)
+        file_bytes = io.BytesIO(response.content)
 
         docs = []
-        with pdfplumber.open("temp.pdf") as pdf:
-            for page in pdf.pages:
-                text = page.extract_text()
-                if text:
-                    docs.extend([para.strip() for para in text.split('\n') if para.strip()])
 
-        os.remove("temp.pdf")
+        def process_page(page):
+            text = page.extract_text()
+            if text:
+                return [para.strip() for para in text.split('\n') if para.strip()]
+            return []
+
+        with pdfplumber.open(file_bytes) as pdf:
+            with ThreadPoolExecutor() as executor:
+                results = executor.map(process_page, pdf.pages)
+            for page_result in results:
+                docs.extend(page_result)
+
         return docs
     except Exception as e:
         print(f"PDF Error: {e}")
@@ -39,20 +45,20 @@ def extract_text_from_pdf_url(url: str) -> List[str]:
 
 # ---------------------- FAISS Index ----------------------
 def build_faiss_index(docs: List[str]):
-    embeddings = model.encode(docs)
+    embeddings = model.encode(docs, batch_size=16, show_progress_bar=False)
     index = faiss.IndexFlatL2(embeddings.shape[1])
     index.add(np.array(embeddings))
     return index
 
 # ---------------------- Match Closest Clause ----------------------
 def find_best_match(index, docs, question: str, top_k=3) -> str:
-    question_embedding = model.encode([question])
+    question_embedding = model.encode([question], show_progress_bar=False)
     distances, indices = index.search(np.array(question_embedding), k=top_k)
     top_matches = [docs[i] for i in indices[0] if i < len(docs)]
     best = sorted(top_matches, key=lambda x: -len(set(x.lower().split()) & set(question.lower().split())))[0]
     return best
 
-# ---------------------- Simple Intent Parser ----------------------
+# ---------------------- Intent Parser ----------------------
 def llm_parser(q: str):
     return {"intent": "lookup_clause", "focus": q}
 
@@ -91,23 +97,19 @@ def hackrx_run(request: QueryRequest, authorization: str = Header(None)):
     for q in request.questions:
         parsed = llm_parser(q)
         best_clause = find_best_match(index, docs, parsed["focus"])
-        # Keep response short and relevant
         short_clause = best_clause.strip().replace("\n", " ")
         if len(short_clause) > 400:
             short_clause = short_clause[:400] + "..."
         answers.append(short_clause)
 
-    return {
-        "success": True,
-        "answers": answers
-    }
+    return {"success": True, "answers": answers}
 
 # ---------------------- Root Endpoint ----------------------
 @app.get("/")
 def root():
     return {"message": "LLM Query Retrieval API is up and running 🚀"}
 
-# ---------------------- Swagger Auth Button ----------------------
+# ---------------------- Swagger Auth ----------------------
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
@@ -134,7 +136,7 @@ def custom_openapi():
 
 app.openapi = custom_openapi
 
-# ---------------------- Run the Server ----------------------
+# ---------------------- Run Server ----------------------
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
